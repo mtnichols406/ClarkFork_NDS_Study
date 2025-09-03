@@ -1,0 +1,1214 @@
+---
+title: "Clark Fork River, MT - bioassay experiment"
+author: "Matthew T. Nichols"
+date: "2025-02-10"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## nutrient diffusing substrate code
+
+```{r}
+#set working directory
+#setwd("/Users/matthewnichols/Desktop/NADAS/Paper/0_Data/FINAL_CODE")
+
+```
+
+```{r}
+#load ALL libraries
+library(brms)
+library(lme4)
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(plotly)
+library(patchwork)
+library(dataRetrieval)
+
+options(mc.cores = parallel::detectCores()) #run stan using multiple cores
+
+```
+
+
+```{r}
+NDS <- read.csv("NDS_CHLA.csv")
+
+nds_model_brms <- 
+  brm(log(CHLA) ~ N * P + (1 + N * P | group),  
+  data = NDS, family = gaussian(),
+  prior = c(
+    set_prior("normal(2.7, 0.5)", class = "Intercept"),
+    set_prior("normal(0, 1)", class = "b"),
+    set_prior("student_t(3, 0, 2)", class = "sd") 
+  ),
+  control = list(adapt_delta = 0.99),
+  warmup = 2000, iter = 4000, chains = 4
+)
+
+```
+
+```{r}
+print(nds_model_brms)
+ranef(nds_model_brms)
+```
+
+
+```{r}
+#extract coefficients
+#coef_b<-coef(model_brms)
+nds_coef_b<-coef(nds_model_brms)
+
+nds_total_effects_b<-data.frame( group=as.factor(c(1:12)),
+                          beta_0=nds_coef_b$group[,1,1],
+                     beta_N=nds_coef_b$group[,1,2],
+                     beta_P=nds_coef_b$group[,1,3],
+                     beta_NP=nds_coef_b$group[,1,4])
+
+
+#make another data frame of x variables
+nds_bparams<- data.frame(
+  N=rep(c(0,1,0,1),12),
+  P=rep(c(0,0,1,1),12), 
+  group=as.factor(rep(c(1:12), each = 4)))
+
+#classify deployment and site
+nds_bparams <- nds_bparams %>%
+  mutate(
+    Site = case_when(
+      group %in% c(1, 5, 9) ~ 1,
+      group %in% c(2, 6, 10) ~ 2,
+      group %in% c(3, 7, 11) ~ 3,
+      group %in% c(4, 8, 12) ~ 4,
+    ),
+    Deployment = case_when(
+      group %in% 1:4 ~ 1,
+      group %in% 5:8 ~ 2,
+      group %in% 9:12 ~ 3,
+    )
+  )
+
+#join dataframes
+nds_bparams<- left_join(nds_bparams,nds_total_effects_b, by ="group")
+
+#estimate predicted values for plotting
+nds_bparams$pred<- nds_bparams$beta_0+nds_bparams$beta_N*nds_bparams$N + nds_bparams$beta_P*nds_bparams$P +
+  nds_bparams$beta_NP*nds_bparams$P*nds_bparams$P* nds_bparams$N
+
+```
+
+```{r}
+# custom labels for deployments
+ deployment_labels <- c(
+   "1" = "Early",
+   "2" = "Mid",
+   "3" = "Late"
+)
+
+#custom labels for groups (Sites)
+ site_labels <- c(
+   "1" = "Site 1",
+   "2" = "Site 2",
+   "3" = "Site 3",
+   "4" = "Site 4"
+)
+
+ 
+nds_bparams$group <- as.factor(nds_bparams$group)
+
+
+all_data <- NDS %>% mutate(group = as.factor(Deployment))
+all_bparams <- nds_bparams %>% mutate(group = as.factor(Deployment))
+
+
+# change group to a factor for labeling
+all_data$group <- factor(all_data$group, levels = c(1:12))
+all_bparams$group <- factor(all_bparams$group, levels = c(1:12))
+
+# adjust x-axis for slight offset in P treatment
+all_data$N_ax <- all_data$N + ifelse(all_data$P == 0, -0.05, 0.05)
+all_bparams$N_ax <- all_bparams$N + ifelse(all_bparams$P == 0, -0.05, 0.05)
+all_bparams$pred_chl <- exp(all_bparams$pred)
+
+
+
+nds_combined <- ggplot(all_data, aes(x = N_ax, y = CHLA, color = as.factor(P))) +
+  geom_point(size = 2, na.rm = TRUE) +
+  geom_line(data = all_bparams, aes(x = N_ax, y = pred_chl, color = as.factor(P))) +
+  theme_classic() +
+  scale_y_continuous(trans = 'log10') +
+  scale_x_continuous(breaks = c(0, 1), limits = c(-0.1, 1.1)) +
+  scale_color_manual(values = c("0" = "red2", "1" = "dodgerblue4"), name = "P") +
+  labs(x = "N", y = expression(Chl-a~(mg/m^2)), title = "") +
+  facet_grid(
+    rows = vars(Site),
+    cols = vars(Deployment),
+    labeller = labeller(Deployment = as_labeller(deployment_labels),
+                        Site = as_labeller(site_labels))
+  ) +
+ theme(
+    axis.title.x = element_text(size = 16),  
+    axis.title.y = element_text(size = 16), 
+    axis.text.x = element_text(size = 12),   
+    axis.text.y = element_text(size = 12),   
+    strip.text.x = element_text(size = 14),  
+    strip.text.y = element_text(size = 14), 
+    legend.title = element_text(size = 14),  
+    legend.text = element_text(size = 12)    
+)
+
+
+
+print(nds_combined)
+```
+
+```{r}
+#ggsave("nds_combined.png", nds_combined, width = 11, height = 8, dpi = 1000)
+```
+
+
+```{r}
+# pull coefficients and sd from model
+nds_coef_b2 <- coef(nds_model_brms)
+
+# group-level sd
+nds_sd_b2 <- nds_coef_b2$group[, 2, ]
+
+# dataframe with sd
+nds_total_effects_b2 <- data.frame(
+  group = 1:12,
+  beta_0 = nds_coef_b2$group[, 1, 1],
+  beta_N = nds_coef_b2$group[, 1, 2],
+  beta_P = nds_coef_b2$group[, 1, 3],
+  beta_NP = nds_coef_b2$group[, 1, 4],
+  beta_0_sd = nds_sd_b2[, 1],  # standard deviation
+  beta_N_sd = nds_sd_b2[, 2],
+  beta_P_sd = nds_sd_b2[, 3],
+  beta_NP_sd = nds_sd_b2[, 4]
+)
+
+# sum total effects -> beta_sum
+nds_total_effects_b2$beta_sum <- nds_total_effects_b2$beta_N + nds_total_effects_b2$beta_P + nds_total_effects_b2$beta_NP
+
+# variance sum rule
+nds_total_effects_b2$beta_sum_sd <- with(nds_total_effects_b2, sqrt(beta_N_sd^2 + beta_P_sd^2 + beta_NP_sd^2))
+
+# merge
+nds_bparams2 <- data.frame(
+  N = rep(c(0, 1, 0, 1), 12),
+  P = rep(c(0, 0, 1, 1), 12),
+  group = as.factor(rep(1:12, each = 4))
+)
+
+nds_total_effects_b2$group <- as.factor(nds_total_effects_b2$group)
+
+nds_bparams2 <- left_join(nds_bparams2, nds_total_effects_b2, by = "group")
+
+# predicted values with se
+nds_bparams2$pred <- with(nds_bparams2, beta_0 + beta_N * N + beta_P * P + beta_NP * N * P)
+nds_bparams2$pred_sd <- with(nds_bparams2,
+  sqrt(beta_0_sd^2 + (N * beta_N_sd)^2 + (P * beta_P_sd)^2 + (N * P * beta_NP_sd)^2)
+)
+
+```
+
+## Algal biomass and parameter estimate dataframe
+
+```{r}
+#upload afdm and algal cover
+afdm_data <- read.csv("AFDM.csv", header = TRUE, sep = ",")
+
+algae_data <- read.csv("Algal_cover.csv", header = TRUE, sep = ",")
+
+```
+
+```{r}
+library(dplyr)
+
+# Calculate average cover, standard deviation, n, and biomass with SE
+algae_avg <- algae_data %>%
+  group_by(Site, Deployment, group) %>% 
+  summarise(
+    avg_cover = mean(Perc_Cover, na.rm = TRUE),
+    algae_sd = sd(Perc_Cover, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    afdm = 1.6,  #average afdm value for all deployments and sites
+
+    biomass = afdm * avg_cover * 100, #afdm * percent cover = g/cm2
+    se_cover = algae_sd / sqrt(n),
+    se_biomass = afdm * se_cover * 100
+  )
+
+```
+
+```{r}
+#join the dataframes by 'group'
+
+nds_total_effects_b2$group <- as.factor(nds_total_effects_b2$group)
+algae_avg$group <- as.factor(algae_avg$group)
+
+bioassay <- left_join(nds_total_effects_b2, algae_avg, by = "group")
+
+# View the result
+print(bioassay)
+```
+
+## surface water chemistry and algal cover (%)
+
+```{r}
+#load data
+ucfr <- read.csv("ucfr_chemistry.csv", header = TRUE, sep = ",")
+```
+
+```{r}
+ucfr <- ucfr %>%
+  mutate(across(c(NO3_µgL, SRP_µgL, NH3_µgL, TP_µgL, TN_µgL), 
+                ~ as.numeric(ifelse(grepl("^<", .), NA, .))))
+
+```
+
+```{r}
+library(dplyr)
+
+ucfr_processed <- ucfr %>%
+  mutate(Date = as.Date(Date)) %>%
+  mutate(Deployment = case_when(
+    Date %in% as.Date(c("2024-06-10", "2024-06-27", "2024-07-17")) ~ 1,  # Deployment 1 for these dates
+    Date %in% as.Date(c("2024-07-31", "2024-08-13")) ~ 2,  # Deployment 2 for these dates
+    Date %in% as.Date(c("2024-08-31", "2024-09-13")) ~ 3,  # Deployment 3 for these dates
+    TRUE ~ NA_real_  
+  )) %>%
+  mutate(Site = as.factor(Site)) %>%  # Ensure site is a factor
+  filter(
+    Site != "BLANK",  # exclude BLANK rows
+    #!is.na(Date)      # remove rows with missing dates
+  ) %>%
+  group_by(Site, Deployment) %>%
+  summarise(
+    # Calculate means for all relevant variables
+    NO3_mean = mean(NO3_µgL, na.rm = TRUE),
+    NO3_sd = sd(NO3_µgL, na.rm = TRUE),
+    SRP_mean = mean(SRP_µgL, na.rm = TRUE),
+    SRP_sd = sd(SRP_µgL, na.rm = TRUE),
+    NH3_mean = mean(NH3_µgL, na.rm = TRUE),
+    NH3_sd = sd(NH3_µgL, na.rm = TRUE),
+    TP_mean = mean(TP_µgL, na.rm = TRUE),
+    TN_mean = mean(TN_µgL, na.rm = TRUE),
+    # DIN_SRP_mean = mean(DIN_SRP, na.rm = TRUE),
+    #num_dates = n_distinct(Date),
+    .groups = 'drop'
+  )
+
+
+#convert µg/L to moles
+ucfr_processed$NO3_moles <- ucfr_processed$NO3_mean /14.067
+ucfr_processed$NH3_moles <- ucfr_processed$NH3_mean /14.067
+ucfr_processed$SRP_moles <- ucfr_processed$SRP_mean /30.973762
+ucfr_processed$TN_mole <- ucfr_processed$TN_mean /14.067
+ucfr_processed$TP_mole <- ucfr_processed$TP_mean /30.973762
+
+ucfr_processed$DIN_moles<- ucfr_processed$NO3_moles+ucfr_processed$NH3_moles
+  
+ucfr_processed$DIN_SRP_mole <- ucfr_processed$DIN_moles/ucfr_processed$SRP_moles
+
+ucfr_processed$TN_TP_mole <- ucfr_processed$TN_mole / ucfr_processed$TP_mole
+
+ucfr_processed$DIN_TP_mole <- ucfr_processed$DIN_moles/ucfr_processed$TP_mole
+
+#how does it look?
+#print(ucfr_processed)
+
+```
+
+```{r}
+# Create the group column
+ucfr_processed <- ucfr_processed %>%
+  mutate(group = case_when(
+    Site == 1 & Deployment == 1 ~ 1,
+    Site == 2 & Deployment == 1 ~ 2,
+    Site == 3 & Deployment == 1 ~ 3,
+    Site == 4 & Deployment == 1 ~ 4,
+    Site == 1 & Deployment == 2 ~ 5,
+    Site == 2 & Deployment == 2 ~ 6,
+    Site == 3 & Deployment == 2 ~ 7,
+    Site == 4 & Deployment == 2 ~ 8,
+    Site == 1 & Deployment == 3 ~ 9,
+    Site == 2 & Deployment == 3 ~ 10,
+    Site == 3 & Deployment == 3 ~ 11,
+    Site == 4 & Deployment == 3 ~ 12,
+    TRUE ~ NA_real_  # Assign NA if Site or Deployment is missing
+  ))
+
+ucfr_processed <- ucfr_processed %>%
+  mutate(TN_TP = ifelse(!is.na(TN_mean) & !is.na(TP_mean) & TP_mean > 0, TN_mean / TP_mean, NA))
+
+```
+
+```{r}
+# Ensure Site and Deployment are the same type in both dataframes
+bioassay <- bioassay %>%
+  mutate(
+    Site = as.integer(Site),
+    Deployment = as.integer(Deployment),
+    group = as.factor(group)  # Ensure 'group' is a factor
+  )
+
+ucfr_processed <- ucfr_processed %>%
+  mutate(
+    Site = as.integer(Site),
+    Deployment = as.integer(Deployment),
+    group = as.factor(group)  # Ensure 'group' is a factor
+  )
+
+# Perform the join
+bioassay <- left_join(bioassay, ucfr_processed, by = c("group", "Site", "Deployment"))
+```
+
+```{r}
+# clean data
+bioassay_clean <- bioassay %>%
+  filter(!is.na(TN_TP_mole), !is.na(DIN_SRP_mole), !is.na(beta_P), !is.na(beta_N), !is.na(beta_NP),
+         !is.infinite(TN_TP_mole), !is.infinite(DIN_SRP_mole))
+
+print(bioassay)
+```
+
+```{r}
+# Compute Pearson correlation coefficients
+r1 <- cor(bioassay_clean$TN_TP_mole, bioassay_clean$beta_P, use = "complete.obs")
+r2 <- cor(bioassay_clean$TN_TP_mole, bioassay_clean$beta_N, use = "complete.obs")
+r3 <- cor(bioassay_clean$TN_TP_mole, bioassay_clean$beta_NP, use = "complete.obs")
+r4 <- cor(bioassay_clean$TN_TP_mole, bioassay_clean$beta_sum, use = "complete.obs")
+r5 <- cor(bioassay_clean$DIN_SRP_mole, bioassay_clean$beta_P, use = "complete.obs")
+r6 <- cor(bioassay_clean$DIN_SRP_mole, bioassay_clean$beta_N, use = "complete.obs")
+r7 <- cor(bioassay_clean$DIN_SRP_mole, bioassay_clean$beta_NP, use = "complete.obs")
+r8 <- cor(bioassay_clean$DIN_SRP_mole, bioassay_clean$beta_sum, use = "complete.obs")
+
+# Plot 1: TN:TP vs beta_P
+plot1_1 <- ggplot(bioassay_clean, aes(TN_TP_mole, beta_P)) +
+  geom_point(color = "dodgerblue4") +
+  geom_errorbar(aes(ymin = beta_P - beta_P_sd, ymax = beta_P + beta_P_sd), width = 0.02, color = "dodgerblue4") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "", y = expression(beta^P)) +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  annotate("text", 
+           x = max(bioassay_clean$TN_TP_mole, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_P, na.rm = TRUE), 
+           label = paste0("r = ", round(r1, 2)), 
+           size = 6, hjust = 1, vjust = 0)+
+           geom_hline(yintercept = 0, linetype = "dashed", color = "gray") + 
+           geom_vline(xintercept = 17, linetype = "dashed", color = "gray")
+
+# Plot 2: TN:TP vs beta_N
+plot2_1 <- ggplot(bioassay_clean, aes(TN_TP_mole, beta_N)) +
+  geom_point(color = "red3") +
+  geom_errorbar(aes(ymin = beta_N - beta_N_sd, ymax = beta_N + beta_N_sd), width = 0.02, color = "red3") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "", y = expression(beta^N)) +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  annotate("text", 
+           x = max(bioassay_clean$TN_TP_mole, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_P, na.rm = TRUE), 
+           label = paste0("r = ", round(r2, 2)), 
+           size = 6, hjust = 1, vjust = 0)+
+           geom_hline(yintercept = 0, linetype = "dashed", color = "gray") + 
+           geom_vline(xintercept = 17, linetype = "dashed", color = "gray")
+
+# Plot 3: TN:TP vs beta_NP
+plot3_1 <- ggplot(bioassay_clean, aes(TN_TP_mole, beta_NP)) +
+  geom_point(color = "darkorchid4") +
+  geom_errorbar(aes(ymin = beta_NP - beta_NP_sd, ymax = beta_NP + beta_NP_sd), width = 0.02, color = "darkorchid4") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "", y = expression(beta^NP)) +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+   annotate("text", 
+           x = max(bioassay_clean$TN_TP_mole, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_P, na.rm = TRUE), 
+           label = paste0("r = ", round(r3, 2)), 
+           size = 6, hjust = 1, vjust = 0)+
+           geom_hline(yintercept = 0, linetype = "dashed", color = "gray") + 
+           geom_vline(xintercept = 17, linetype = "dashed", color = "gray")
+
+# Plot 4: TN:TP vs beta_sum
+plot4_1 <- ggplot(bioassay_clean, aes(TN_TP_mole, beta_sum)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin = beta_sum - beta_sum_sd, ymax = beta_sum + beta_sum_sd), width = 0.02, color = "black") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "TN:TP", y = expression(beta^sum)) +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  annotate("text", 
+           x = max(bioassay_clean$TN_TP_mole, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_P, na.rm = TRUE), 
+           label = paste0("r = ", round(r4, 2)), 
+           size = 6, hjust = 1, vjust = 0)+
+           geom_hline(yintercept = 0, linetype = "dashed", color = "gray") + 
+           geom_vline(xintercept = 17, linetype = "dashed", color = "gray")
+# Plot 5: DIN:SRP vs beta_P
+plot5_1 <- ggplot(bioassay_clean, aes(DIN_SRP_mole, beta_P)) +
+  geom_point(color = "dodgerblue4") +
+  geom_errorbar(aes(ymin = beta_P - beta_P_sd, ymax = beta_P + beta_P_sd), width = 0.1, color = "dodgerblue4") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "", y = "") +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  annotate("text", 
+           x = max(bioassay_clean$DIN_SRP_mole, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_P, na.rm = TRUE), 
+           label = paste0("r = ", round(r5, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") + 
+  geom_vline(xintercept = 17, linetype = "dashed", color = "gray")
+
+# Plot 6: DIN:SRP vs beta_N
+plot6_1 <- ggplot(bioassay_clean, aes(DIN_SRP_mole, beta_N)) +
+  geom_point(color = "red3") +
+  geom_errorbar(aes(ymin = beta_N - beta_N_sd, ymax = beta_N + beta_N_sd), width = 0.1, color = "red3") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "", y = "") +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  annotate("text", 
+           x = max(bioassay_clean$DIN_SRP_mole, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_N, na.rm = TRUE), 
+           label = paste0("r = ", round(r6, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") + 
+  geom_vline(xintercept = 17, linetype = "dashed", color = "gray")
+
+# Plot 7: DIN:SRP vs beta_NP
+plot7_1 <- ggplot(bioassay_clean, aes(DIN_SRP_mole, beta_NP)) +
+  geom_point(color = "darkorchid4") +
+  geom_errorbar(aes(ymin = beta_NP - beta_NP_sd, ymax = beta_NP + beta_NP_sd), width = 0.1, color = "darkorchid4") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "", y = "") +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  annotate("text", 
+           x = max(bioassay_clean$DIN_SRP_mole, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_NP, na.rm = TRUE), 
+           label = paste0("r = ", round(r7, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") + 
+  geom_vline(xintercept = 17, linetype = "dashed", color = "gray")
+
+# Plot 8: DIN:SRP vs beta_sum
+plot8_1 <- ggplot(bioassay_clean, aes(DIN_SRP_mole, beta_sum)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin = beta_sum - beta_sum_sd, ymax = beta_sum + beta_sum_sd), width = 0.1, color = "black") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "DIN:SRP", y = "") +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 16)) +
+  annotate("text", 
+           x = max(bioassay_clean$DIN_SRP_mole, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_sum, na.rm = TRUE), 
+           label = paste0("r = ", round(r8, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") + 
+  geom_vline(xintercept = 17, linetype = "dashed", color = "gray")
+
+
+# Combine plots
+beta_params_plot2 <- (plot1_1 / plot2_1 / plot3_1 / plot4_1) | (plot5_1 / plot6_1 / plot7_1 / plot8_1)
+
+# Display the plot
+beta_params_plot2
+
+```
+
+
+```{r}
+#ggsave("beta_params_plot4.png", beta_params_plot4, width = 10, height = 8, dpi = 1000)
+```
+
+## Plotting Algae and Nutrient Ratios
+
+```{r}
+r9 <- cor(bioassay$TN_TP_mole, bioassay$biomass, use = "complete.obs")
+r10 <- cor(bioassay$DIN_SRP_mole, bioassay$biomass, use = "complete.obs")
+
+plot9 <- ggplot(bioassay, aes(TN_TP_mole, biomass)) +
+  geom_point(color = "forestgreen") +
+  geom_errorbar(aes(ymin = biomass - se_biomass, ymax = biomass + se_biomass),
+                width = 0, color = "forestgreen") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "TN:TP", y = expression(Algal~Biomass~(g~AFDM/m^2))) +
+  theme(
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16, face = "bold"),
+    axis.text.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12)
+  ) +
+  annotate("text", 
+           x = max(bioassay$TN_TP_mole, na.rm = TRUE), 
+           y = max(bioassay$biomass, na.rm = TRUE), 
+           label = paste0("r = ", round(r9, 2)), 
+           size = 6, hjust = 1, vjust = 1) +
+  geom_hline(yintercept = 35, linetype = "dashed", color = "gray")
+
+# Plot DIN:SRP vs biomass with SE bars
+plot10 <- ggplot(bioassay, aes(DIN_SRP_mole, biomass)) +
+  geom_point(color = "forestgreen") +
+  geom_errorbar(aes(ymin = biomass - se_biomass, ymax = biomass + se_biomass),
+                width = 0, color = "forestgreen") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "DIN:SRP", y = expression(Algal~Biomass~(g~AFDM/m^2))) +
+  theme(
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16, face = "bold"),
+    axis.text.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12)
+  ) +
+  annotate("text", 
+           x = max(bioassay$DIN_SRP_mole, na.rm = TRUE), 
+           y = max(bioassay$biomass, na.rm = TRUE), 
+           label = paste0("r = ", round(r10, 2)), 
+           size = 6, hjust = 1, vjust = 1) +
+  geom_hline(yintercept = 35, linetype = "dashed", color = "gray")
+
+
+```
+
+```{r}
+# Combine the plots
+algal_plot <- (plot9) | (plot10)
+print(algal_plot)
+```
+
+
+```{r}
+# Specify png device explicitly to avoid the ragg default
+#ggsave("algal_plot.png", algal_plot, width = 10, height = 5, dpi = 1000)
+```
+
+## Supplemental Index
+
+```{r}
+ucfr_nutrient <- ucfr %>%
+  mutate(Date = as.Date(Date), # Ensure Date is in Date format
+         Site = as.factor(Site)) %>% # Ensure Site is a factor
+  filter(
+    Site != "BLANK" # Exclude BLANK rows
+  ) %>%
+  group_by(Site, Date) %>%
+  summarise(
+    # Nitrate (NO3)
+    NO3_mean = mean(NO3_µgL, na.rm = TRUE),
+    NO3_sd = sd(NO3_µgL, na.rm = TRUE),
+    # Soluble Reactive Phosphorus (SRP)
+    SRP_mean = mean(SRP_µgL, na.rm = TRUE),
+    SRP_sd = sd(SRP_µgL, na.rm = TRUE),
+    # Ammonia (NH3)
+    NH3_mean = mean(NH3_µgL, na.rm = TRUE),
+    NH3_sd = sd(NH3_µgL, na.rm = TRUE),
+    # Total Phosphorus (TP)
+    TP_mean = mean(TP_µgL, na.rm = TRUE),
+    TP_sd = sd(TP_µgL, na.rm = TRUE),
+    # Total Nitrogen (TN)
+    TN_mean = mean(TN_µgL, na.rm = TRUE),
+    TN_sd = sd(TN_µgL, na.rm = TRUE),
+    # DIN (Dissolved Inorganic Nitrogen)
+    DIN_mean = mean(NO3_µgL + NH3_µgL, na.rm = TRUE),  # Mean of summed values
+    DIN_sd = sd(NO3_µgL + NH3_µgL, na.rm = TRUE) 
+  )
+
+
+# Ensure Site is a factor
+ucfr_nutrient <- ucfr_nutrient %>%
+  mutate(Site = as.factor(Site))
+```
+
+## Nutrient concentrations over time
+### Nitrate trends for all sites
+
+```{r}
+# Define shaded date ranges
+shaded_periods <- data.frame(
+  xmin = as.Date(c("2024-06-26", "2024-07-24", "2024-08-21")),
+  xmax = as.Date(c("2024-07-14", "2024-08-11", "2024-09-08"))
+)
+
+# customize site colors (if needed)
+site_colors <- c(
+  "1" = "black",
+  "2" = "black",  
+  "3" = "black",  
+  "4" = "black" 
+)
+
+# Create the plot
+no3_plot <- ggplot(ucfr_nutrient, aes(x = Date, y = NO3_mean, 
+                                      shape = Site, 
+                                      linetype = Site,
+                                      color = Site)) +
+  geom_rect(data = shaded_periods, 
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf), 
+            inherit.aes = FALSE,
+            fill = "lightgray", alpha = 0.4) +
+  geom_line(size = 0.75) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(
+    ymin = pmax(NO3_mean - NO3_sd, 0),
+    ymax = NO3_mean + NO3_sd
+  ), width = 0.2) +
+  scale_shape_manual(values = c("1" = 16, "2" = 1, "3" = 15, "4" = 0)) +
+  scale_linetype_manual(values = c("1" = "solid", "2" = "dashed", "3" = "solid", "4" = "dashed")) +
+  scale_color_manual(values = site_colors) +
+  scale_y_continuous(limits = c(0, 300), breaks = seq(0, 300, 100)) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  ) +
+  labs(
+    x = "Date",
+    y = expression(NO[3]^"-" ~ "(µg N/L)"),
+    shape = "Site",
+    linetype = "Site",
+    color = "Site"
+  )
+
+
+
+# Print the plot
+print(no3_plot)
+
+```
+
+```{r}
+#ggsave("nitrate_plot.png", no3_plot, width = 11, height = 8, dpi = 1000)
+```
+
+### SRP trends for all sites
+
+```{r}
+# Filter out invalid rows for SRP_mean
+ucfr_nutrient <- ucfr_nutrient %>%
+  filter(!is.na(SRP_mean) & SRP_mean > 0)
+
+# Define custom site colors again (if not already defined)
+site_colors <- c(
+  "1" = "black",
+  "2" = "black",  
+  "3" = "black",  
+  "4" = "black" 
+)
+
+# Replot with the filtered dataset
+srp_plot <- ggplot(ucfr_nutrient, aes(x = Date, y = SRP_mean, 
+                                      shape = Site, 
+                                      linetype = Site,
+                                      color = Site)) +
+  geom_rect(data = shaded_periods, 
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf), 
+            inherit.aes = FALSE,
+            fill = "lightgray", alpha = 0.4) +
+  geom_line(size = 0.75) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(
+    ymin = pmax(SRP_mean - SRP_sd, 0),
+    ymax = SRP_mean + SRP_sd
+  ), width = 0.2) +
+  scale_shape_manual(values = c("1" = 16, "2" = 1, "3" = 15, "4" = 0)) +
+  scale_linetype_manual(values = c("1" = "solid", "2" = "dashed", "3" = "solid", "4" = "dashed")) +
+  scale_color_manual(values = site_colors) +
+  scale_y_continuous(limits = c(0, 15), breaks = seq(0, 15, 5)) +
+  theme_light(base_size = 14) +
+  theme(
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "Date",
+    y = "SRP (µg/L)",
+    shape = "Site",
+    linetype = "Site",
+    color = "Site"
+  )
+
+print(srp_plot)
+
+```
+
+```{r}
+#ggsave("srp_plot.png", srp_plot, width = 11, height = 8, dpi = 1000)
+```
+
+### NH3 trends for all sites
+
+```{r}
+# Define custom site colors again (if not already defined)
+site_colors <- c(
+  "1" = "black",
+  "2" = "black",  
+  "3" = "black",  
+  "4" = "black" 
+)
+
+
+# Create the updated NH3 plot
+nh3_plot <- ggplot(ucfr_nutrient, aes(x = Date, y = NH3_mean, 
+                                      shape = Site, 
+                                      linetype = Site,
+                                      color = Site)) +
+  geom_rect(data = shaded_periods, 
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf), 
+            inherit.aes = FALSE,
+            fill = "lightgray", alpha = 0.4) +
+  geom_line(size = 0.75) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(
+    ymin = pmax(NH3_mean - NH3_sd, 0),
+    ymax = NH3_mean + NH3_sd
+  ), width = 0.2) +
+  scale_shape_manual(values = c("1" = 16, "2" = 1, "3" = 15, "4" = 0)) +
+  scale_linetype_manual(values = c("1" = "solid", "2" = "dashed", "3" = "solid", "4" = "dashed")) +
+  scale_color_manual(values = site_colors) +
+  scale_y_continuous(
+    limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.05)),
+    breaks = scales::pretty_breaks(n = 6)
+  ) +
+  theme_light(base_size = 14) +
+  theme(
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    x = "Date",
+    y = expression(NH[4]^"+" ~ "(µg N/L)"),
+    shape = "Site",
+    linetype = "Site",
+    color = "Site"
+  )
+
+print(nh3_plot)
+
+```
+
+```{r}
+#ggsave("nh3_plot.png", nh3_plot, width = 11, height = 8, dpi = 1000)
+
+```
+
+```{r}
+
+# modify plots for identical axes 
+no3_plot_modified <- no3_plot +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+nh3_plot_modified <- nh3_plot +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+srp_plot_modified <- srp_plot +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+
+# combine the plots
+combined_plot <- no3_plot_modified / nh3_plot_modified / srp_plot_modified  +
+  plot_layout(guides = "collect") & # Collect all legends
+  theme(legend.position = "right")  # Place the legend on the right
+
+# print the combined plot
+print(combined_plot)
+```
+
+
+```{r}
+library(ggplot2)
+
+# Pearson correlation coefficient for b_params and TN
+r11 <- cor(bioassay_clean$TN_mean, bioassay_clean$beta_P, use = "complete.obs")
+r12 <- cor(bioassay_clean$TN_mean, bioassay_clean$beta_N, use = "complete.obs")
+r13 <- cor(bioassay_clean$TN_mean, bioassay_clean$beta_NP, use = "complete.obs")
+r14 <- cor(bioassay_clean$TN_mean, bioassay_clean$beta_sum, use = "complete.obs")
+
+
+# Pearson correlation coefficient for b_params and TP
+r15 <- cor(bioassay_clean$TP_mean, bioassay_clean$beta_P, use = "complete.obs")
+r16 <- cor(bioassay_clean$TP_mean, bioassay_clean$beta_N, use = "complete.obs")
+r17 <- cor(bioassay_clean$TP_mean, bioassay_clean$beta_NP, use = "complete.obs")
+r18 <- cor(bioassay_clean$TP_mean, bioassay_clean$beta_sum, use = "complete.obs")
+
+# Plot 11: TN vs beta_P
+plot11 <- ggplot(bioassay_clean, aes(TN_mean, beta_P)) +
+  geom_point(color = "dodgerblue4") +
+  geom_errorbar(aes(ymin = beta_P - beta_P_sd, ymax = beta_P + beta_P_sd), width = 0.02, color = "dodgerblue4") +
+  theme_classic() +
+  labs(x = "", y = expression(beta^P)) +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  annotate("text", 
+           x = max(bioassay_clean$TN_mean, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_P, na.rm = TRUE), 
+           label = paste0("r = ", round(r11, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray")
+
+# Plot 12: TN vs beta_N
+plot12 <- ggplot(bioassay_clean, aes(TN_mean, beta_N)) +
+  geom_point(color = "red3") +
+  geom_errorbar(aes(ymin = beta_N - beta_N_sd, ymax = beta_N + beta_N_sd), width = 0.02, color = "red3") +
+  theme_classic() +
+  labs(x = "", y = expression(beta^N)) +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  annotate("text", 
+           x = max(bioassay_clean$TN_mean, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_N, na.rm = TRUE), 
+           label = paste0("r = ", round(r12, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray")
+
+# Plot 13: TN vs beta_NP
+plot13 <- ggplot(bioassay_clean, aes(TN_mean, beta_NP)) +
+  geom_point(color = "darkorchid4") +
+  geom_errorbar(aes(ymin = beta_NP - beta_NP_sd, ymax = beta_NP + beta_NP_sd), width = 0.02, color = "darkorchid4") +
+  theme_classic() +
+  labs(x = "TN (µg/L)", y = expression(beta^NP)) +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  annotate("text", 
+           x = max(bioassay_clean$TN_mean, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_NP, na.rm = TRUE), 
+           label = paste0("r = ", round(r13, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray")
+
+
+# Plot 14: TN vs beta_sum
+plot14 <- ggplot(bioassay_clean, aes(TN_mean, beta_sum)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin = beta_sum - beta_sum_sd, ymax = beta_sum + beta_sum_sd), width = 0.02, color = "black") +
+  theme_classic() +
+  labs(x = "", y = expression(beta^sum)) +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  annotate("text", 
+           x = max(bioassay_clean$TN_mean, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_sum, na.rm = TRUE), 
+           label = paste0("r = ", round(r14, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray")
+
+
+# Plot 15: TP vs beta_P
+plot15 <- ggplot(bioassay_clean, aes(TP_mean, beta_P)) +
+  geom_point(color = "dodgerblue4") +
+  geom_errorbar(aes(ymin = beta_P - beta_P_sd, ymax = beta_P + beta_P_sd), width = 0.1, color = "dodgerblue4") +
+  theme_classic() +
+  labs(x = "", y = "") +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  annotate("text", 
+           x = max(bioassay_clean$TP_mean, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_P, na.rm = TRUE), 
+           label = paste0("r = ", round(r15, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray")
+
+# Plot 16: TP vs beta_N
+plot16 <- ggplot(bioassay_clean, aes(TP_mean, beta_N)) +
+  geom_point(color = "red3") +
+  geom_errorbar(aes(ymin = beta_N - beta_N_sd, ymax = beta_N + beta_N_sd), width = 0.1, color = "red3") +
+  theme_classic() +
+  labs(x = "", y = "") +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  annotate("text", 
+           x = max(bioassay_clean$TP_mean, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_N, na.rm = TRUE), 
+           label = paste0("r = ", round(r16, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray")
+
+# Plot 17: TP vs beta_NP
+plot17 <- ggplot(bioassay_clean, aes(TP_mean, beta_NP)) +
+  geom_point(color = "darkorchid4") +
+  geom_errorbar(aes(ymin = beta_NP - beta_NP_sd, ymax = beta_NP + beta_NP_sd), width = 0.1, color = "darkorchid4") +
+  theme_classic() +
+  labs(x = "TP (µg/L)", y = "") +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  annotate("text", 
+           x = max(bioassay_clean$TP_mean, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_NP, na.rm = TRUE), 
+           label = paste0("r = ", round(r17, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray")
+
+
+# Plot 18: TP vs beta_sum
+plot18 <- ggplot(bioassay_clean, aes(TP_mean, beta_sum)) +
+  geom_point(color = "black") +
+  geom_errorbar(aes(ymin = beta_sum - beta_sum_sd, ymax = beta_sum + beta_sum_sd), width = 0.02, color = "black") +
+  theme_classic() +
+  labs(x = "", y = "") +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  annotate("text", 
+           x = max(bioassay_clean$TP_mean, na.rm = TRUE), 
+           y = min(bioassay_clean$beta_sum, na.rm = TRUE), 
+           label = paste0("r = ", round(r14, 2)), 
+           size = 6, hjust = 1, vjust = 0) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray")
+
+
+
+# Combine plots
+beta_params_plot5 <- (plot14 / plot11 / plot12 / plot13) | (plot18 / plot15 / plot16 / plot17)
+
+# Display the plot
+beta_params_plot5
+
+```
+
+```{r}
+#ggsave("beta_params_5.png", beta_params_plot5, width = 10, height = 8, dpi = 1000)
+```
+
+```{r}
+# Pearson correlation coefficient for biomass and TN
+r19 <- cor(bioassay$TN_mean, bioassay$biomass, use = "complete.obs")
+
+# Pearson correlation coefficient for biomass and TP
+r20 <- cor(bioassay$TP_mean, bioassay$biomass, use = "complete.obs")
+```
+
+```{r}
+#TN_mean and biomass
+plot19 <- ggplot(bioassay, aes(TN_mean, biomass)) +
+  geom_point(color = "forestgreen") +  
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "TN (µg/L)", y = expression(Algal~Biomass~(g~AFDM/m^2))) +  
+  geom_errorbar(aes(ymin = biomass - se_biomass, ymax = biomass + se_biomass),
+                width = 0, color = "forestgreen") +
+  theme(
+    axis.title.x = element_text(size = 16, face = "bold"),  # Increase x-axis title size
+    axis.title.y = element_text(size = 16, face = "bold"),  # Increase y-axis title size
+    axis.text.y = element_text(size = 14),  # Increase y-axis tick label size
+    axis.text.x = element_text(size = 12)   # Adjust x-axis tick label size
+  ) +
+  annotate("text", 
+           x = max(bioassay$TN_mean, na.rm = TRUE), 
+           y = max(bioassay$biomass, na.rm = TRUE), 
+           label = paste0("r = ", round(r19, 2)), 
+           size = 6, hjust = 1, vjust = 1) +
+  geom_hline(yintercept = 35, linetype = "dashed", color = "gray")
+
+#TP mean and biomass
+plot20 <- ggplot(bioassay, aes(TP_mean, biomass)) +
+  geom_point(color = "forestgreen") +  
+    geom_errorbar(aes(ymin = biomass - se_biomass, ymax = biomass + se_biomass),
+                width = 0, color = "forestgreen") +
+  theme_classic() +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "TP (µg/L)", y = expression(Algal~Biomass~(g~AFDM/m^2))) +  
+  theme(
+    axis.title.x = element_text(size = 16, face = "bold"),  # Increase x-axis title size
+    axis.title.y = element_text(size = 16, face = "bold"),  # Increase y-axis title size
+    axis.text.y = element_text(size = 14),  # Increase y-axis tick label size
+    axis.text.x = element_text(size = 12)   # Adjust x-axis tick label size
+  ) +
+  annotate("text", 
+           x = max(bioassay$TP_mean, na.rm = TRUE), 
+           y = max(bioassay$biomass, na.rm = TRUE), 
+           label = paste0("r = ", round(r20, 2)), 
+           size = 6, hjust = 1, vjust = 1) +
+  geom_hline(yintercept = 35, linetype = "dashed", color = "gray")
+
+```
+
+```{r}
+algal_plot2 <- (plot19) | (plot20)
+print(algal_plot2)
+
+```
+
+```{r}
+# Save the combined plot if needed
+#ggsave("algal_plot2.png", algal_plot2, width = 10, height = 5, dpi = 1000)
+```
+
+
+## Discharge for the CFR
+
+```{r}
+
+# --- Config ---
+# USGS site numbers (fixed mapping to Site 1–4)
+deerlodge_site <- "12324200"  # Site 1
+garrison_site  <- "12324400"  # Site 2
+goldcreek_site <- "12324680"  # Site 3
+beargulch_site <- "12331800"  # Site 4
+
+# Parameter/discharge codes
+pCode    <- "00060"   # Discharge
+statCode <- "00003"   # Daily mean
+
+# Toggle unit conversion: TRUE = m^3/s, FALSE = cfs
+convert_to_cms <- TRUE
+cfs_to_cms     <- 1 / 35.3147
+
+# Plot window
+start_date <- ymd("2024-06-10")
+end_date   <- ymd("2024-09-13")
+
+# Shaded deployment periods
+shaded_periods <- data.frame(
+  xmin  = as.Date(c("2024-06-26", "2024-07-24", "2024-08-21")),
+  xmax  = as.Date(c("2024-07-14", "2024-08-11", "2024-09-08")),
+  label = c("D1", "D2", "D3")
+) |>
+  mutate(mid = xmin + (xmax - xmin) / 2)
+
+# Color palette keyed to Site = "1"–"4"
+palette4 <- c(
+  "1" = "#F6a97a",
+  "2" = "#F66D7A",  
+  "3" = "#D44292",  
+  "4" = "#952EA0"   
+)
+
+  
+# --- Data pull ---
+discharge_deerlodge <- readNWISdv(siteNumbers = deerlodge_site, parameterCd = pCode, statCd = statCode)
+discharge_garrison  <- readNWISdv(siteNumbers = garrison_site,  parameterCd = pCode, statCd = statCode)
+discharge_goldcreek <- readNWISdv(siteNumbers = goldcreek_site, parameterCd = pCode, statCd = statCode)
+discharge_beargulch <- readNWISdv(siteNumbers = beargulch_site, parameterCd = pCode, statCd = statCode)
+
+# --- Combine & prepare ---
+clark_discharge <- bind_rows(
+  discharge_deerlodge,
+  discharge_garrison,
+  discharge_goldcreek,
+  discharge_beargulch
+) |>
+  rename(daily_Q_cfs = X_00060_00003) |>
+  mutate(
+    # Map site_no -> Site factor (1–4) with stable ordering
+    site = factor(
+      as.numeric(factor(site_no,
+                        levels = c(deerlodge_site, garrison_site, goldcreek_site, beargulch_site))),
+      levels = 1:4,
+      labels = c("1", "2", "3", "4")
+    ),
+    Date = as.Date(Date)
+  ) |>
+  filter(Date >= start_date, Date <= end_date) |>
+  mutate(
+    discharge_plot = if (convert_to_cms) daily_Q_cfs * cfs_to_cms else daily_Q_cfs
+  )
+
+# For placing deployment labels near the top of the panel
+y_top <- max(clark_discharge$discharge_plot, na.rm = TRUE)
+
+# --- Plot ---
+q_plot <- ggplot(clark_discharge, aes(x = Date, y = discharge_plot)) +
+  # Shaded deployments
+  geom_rect(
+    data = shaded_periods,
+    aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+    inherit.aes = FALSE,
+    fill = "grey60", alpha = 0.15, show.legend = FALSE
+  ) +
+  # Lines
+  geom_line(aes(color = site), linewidth = 0.7) +
+  # Deployment labels
+  geom_text(
+    data = shaded_periods,
+    aes(x = mid, y = 0.98 * y_top, label = label),
+    inherit.aes = FALSE, size = 3
+  ) +
+  scale_color_manual(values = palette4, name = "Site") +
+  ylab(if (convert_to_cms) expression("Discharge (" * m^3 * "/s)") else "Discharge (cfs)") +
+  xlab(NULL) +
+  theme_classic() +
+  theme(
+    legend.position = "right",         # move to right
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text  = element_text(size = 9),
+    legend.key.height = unit(1.1, "lines")  # spacing between items
+  )
+
+print(q_plot)
+
+
+
+#ggsave("clark_fork_discharge2_2024.png", q_plot, width = 5, height = 3.5, dpi = 1000)
+
+```
+
+
+### Posterior predictive checks:
+
+```{r}
+library(bayesplot)
+library(brms)
+
+
+pp_check(nds_model_brms, type = "dens_overlay")
+pp_check(nds_model_brms, type = "error_binned")
+pp_check(nds_model_brms, type = "ecdf_overlay")
+pp_check(nds_model_brms, type = "hist")    
+pp_check(nds_model_brms, type = "boxplot")     
+pp_check(nds_model_brms, type = "scatter")       
+
+
+pp_check(nds_model_brms, type = "error_scatter_avg")  
+pp_check(nds_model_brms, type = "error_hist")       
+
+
+pp_check(nds_model_brms, type = "stat_2d")   
+pp_check(nds_model_brms, type = "intervals")  
+
+
+```
+
+```{r}
+
+# Define the model
+model <- nds_model_brms  # Replace with your actual model object
+
+# Define the directory to save plots
+output_dir <- "ppc_plots/"
+dir.create(output_dir, showWarnings = FALSE)
+
+# List of posterior predictive check types
+ppc_types <- c("dens_overlay", "error_binned", "ecdf_overlay", "hist", "boxplot", 
+               "scatter", "error_scatter_avg", "error_hist", "stat_2d", "intervals")
+
+# Loop through each type and save the plot
+for (type in ppc_types) {
+  p <- pp_check(model, type = type)
+  ggsave(filename = paste0(output_dir, "ppc_", type, ".png"), plot = p, width = 6, height = 4, dpi = 300)
+}
+
+
+```
